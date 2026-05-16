@@ -87,10 +87,34 @@ void ConvElementwiseFuser::InsertNewNode(SSAGraph* graph,
       elementwise_add_bias_t->Get<lite::Tensor>().dims();
   auto groups = conv_op_desc->GetAttr<int>("groups");
 
+  // 支持 [1,C,1,1] 形式的 4D bias squeeze 到 1D [C]
+  // 前提：只有 channel 维度(dim1)非1，其余维度均为1
+  // 这种情况下 broadcast 等价于 per-channel add，可以安全融合到 conv
+  // 数据无需重排：[1,C,1,1] 和 [C] 在内存中都是 C 个连续 float
   if (elementwise_add_bias_dims.size() != 1) {
-    nodes_.erase(nodes_.begin(), nodes_.end());
-    LOG(WARNING) << "elementwise_add_bias_dims not equal to 1, fusion failed";
-    return;
+    bool can_squeeze = false;
+    if (elementwise_add_bias_dims.size() == 4 &&
+        elementwise_add_bias_dims[0] == 1 &&
+        elementwise_add_bias_dims[2] == 1 &&
+        elementwise_add_bias_dims[3] == 1) {
+      can_squeeze = true;
+    }
+    if (can_squeeze) {
+      auto* bias_tensor =
+          scope->FindVar(matched.at("bias")->arg()->name)
+              ->GetMutable<lite::Tensor>();
+      VLOG(4) << "ConvElementwiseFuser: squeezing bias from [1,"
+              << elementwise_add_bias_dims[1] << ",1,1] to ["
+              << elementwise_add_bias_dims[1] << "]";
+      bias_tensor->Resize({elementwise_add_bias_dims[1]});
+      elementwise_add_bias_dims = bias_tensor->dims();
+    } else {
+      nodes_.erase(nodes_.begin(), nodes_.end());
+      LOG(WARNING) << "elementwise_add_bias_dims size="
+                   << elementwise_add_bias_dims.size()
+                   << " is not 1 and cannot be squeezed, fusion failed";
+      return;
+    }
   }
   auto conv_filter_var =
       scope->FindVar((conv_op_desc->Input("Filter").front()));
