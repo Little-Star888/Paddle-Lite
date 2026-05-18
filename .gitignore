@@ -124,3 +124,5 @@ third-party/*
 
 # hiai libs
 ai_ddk_lib*
+
+android-ndk-r21e
